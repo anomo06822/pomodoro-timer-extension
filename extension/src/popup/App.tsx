@@ -197,6 +197,7 @@ const App: React.FC<AppProps> = ({ mode = 'popup' }) => {
           : 'Break finished. Ready for the next focus session?';
       setCompletionMessage(message);
       navigator.vibrate?.([200, 80, 200]);
+      openCompletionPage();
 
       if (settingsRef.current.autoStartNext) {
         setTimeout(() => {
@@ -386,8 +387,13 @@ const App: React.FC<AppProps> = ({ mode = 'popup' }) => {
     }
 
     if (sessionType === 'Focus' && !selectedTask) {
-      setExportFeedback('Select a task before starting a focus session.');
-      return;
+      const confirmed = window.confirm(
+        'No task selected. Start this focus session without tracking it against a task?'
+      );
+      if (!confirmed) {
+        setExportFeedback('Select a task to track pomodoro progress.');
+        return;
+      }
     }
 
     const durationSeconds = status === 'paused' ? remaining : durations[sessionType];
@@ -464,6 +470,21 @@ const App: React.FC<AppProps> = ({ mode = 'popup' }) => {
   const handleOpenFullMode = () => {
     const runtime = getRuntime();
     const url = runtime?.getURL?.('focus.html') ?? 'focus.html';
+    if (chrome?.tabs?.create) {
+      chrome.tabs.create({ url });
+      return;
+    }
+
+    window.open(url, '_blank', 'noopener');
+  };
+
+  const openCompletionPage = () => {
+    if (mode !== 'popup') {
+      return;
+    }
+
+    const runtime = getRuntime();
+    const url = runtime?.getURL?.('focus.html#completed') ?? 'focus.html#completed';
     if (chrome?.tabs?.create) {
       chrome.tabs.create({ url });
       return;
@@ -571,7 +592,8 @@ const App: React.FC<AppProps> = ({ mode = 'popup' }) => {
   const handleTestNotification = () => {
     callBackground({ type: 'TEST_NOTIFICATION' })
       .then(() => {
-        setExportFeedback('Test notification sent.');
+        setCompletionMessage('Practice alert triggered — check the focus tab and notifications!');
+        openCompletionPage();
       })
       .catch((error: Error) => {
         setExportFeedback(`Test failed: ${error.message}`);
@@ -600,25 +622,29 @@ const App: React.FC<AppProps> = ({ mode = 'popup' }) => {
           <p className="timer-subtitle">{statusLabel}</p>
         </div>
         <div className="theme-toggle">
-          <label htmlFor="theme-select">Theme</label>
-          <select
-            id="theme-select"
-            value={theme}
-            onChange={(event) => handleThemeChange(event.target.value as 'system' | 'light' | 'dark')}
-            aria-label="Select theme"
-          >
-            <option value="system">System ({resolvedTheme})</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-          <button type="button" className="ghost-button" onClick={handleOpenSettings}>
-            Settings
-          </button>
-          {mode === 'popup' && (
-            <button type="button" className="ghost-button" onClick={handleOpenFullMode}>
-              Full view
+          <div className="theme-toggle__group">
+            <label htmlFor="theme-select">Theme</label>
+            <select
+              id="theme-select"
+              value={theme}
+              onChange={(event) => handleThemeChange(event.target.value as 'system' | 'light' | 'dark')}
+              aria-label="Select theme"
+            >
+              <option value="system">System ({resolvedTheme})</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+          <div className="theme-toggle__actions">
+            <button type="button" className="ghost-button" onClick={handleOpenSettings}>
+              Settings
             </button>
-          )}
+            {mode === 'popup' && (
+              <button type="button" className="ghost-button" onClick={handleOpenFullMode}>
+                Full view
+              </button>
+            )}
+          </div>
         </div>
       </header>
       <main className="timer-main">

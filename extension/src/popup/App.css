@@ -54,8 +54,31 @@
 
 .theme-toggle {
   display: flex;
-  gap: 8px;
   align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.theme-toggle__group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.theme-toggle__group select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.theme-toggle__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .timer-main {
@@ -66,6 +89,16 @@
 
 .popup-root--fullscreen .timer-main {
   gap: 24px;
+}
+
+.popup-root--fullscreen .theme-toggle {
+  justify-content: space-between;
+  gap: clamp(16px, 3vw, 28px);
+}
+
+.popup-root--fullscreen .theme-toggle__group select {
+  font-size: clamp(1rem, 1.1vw, 1.2rem);
+  padding: clamp(8px, 1.2vw, 12px) clamp(12px, 1.6vw, 18px);
 }
 
 .timer-display {
