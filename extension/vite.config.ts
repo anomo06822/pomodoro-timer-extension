@@ -80,6 +80,9 @@ export default defineConfig(({ mode }) => {
         'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
         'Access-Control-Allow-Headers': '*',
       },
+      hmr: {
+        clientPort: Number(process.env.HMR_PORT) || 5173,
+      },
     },
     build: {
       outDir: 'dist',
@@ -88,6 +91,7 @@ export default defineConfig(({ mode }) => {
           'popup.html': resolve(__dirname, 'popup.html'),
           'options.html': resolve(__dirname, 'options.html'),
           'offscreen.html': resolve(__dirname, 'src/offscreen/offscreen.html'),
+          'focus.html': resolve(__dirname, 'focus.html'),
         },
       },
     },

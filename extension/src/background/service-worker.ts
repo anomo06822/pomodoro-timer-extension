@@ -156,6 +156,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
     return true;
   }
+
+  if (message?.type === 'TEST_NOTIFICATION') {
+    getSettings()
+      .then((settings) => notifySessionComplete({ sessionType: 'Focus', settings }))
+      .then(() => sendResponse({ ok: true }))
+      .catch((error: Error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {

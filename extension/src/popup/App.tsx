@@ -5,6 +5,7 @@ import {
   DEFAULT_METRICS,
   DEFAULT_SETTINGS,
   createTask,
+  type ActiveSession,
   type CompletedSession,
   type Metrics,
   type Settings,
@@ -13,6 +14,10 @@ import {
 } from '../shared/core';
 
 type TimerStatus = 'idle' | 'running' | 'paused';
+
+interface AppProps {
+  mode?: 'popup' | 'fullscreen';
+}
 
 const SESSION_LABEL: Record<SessionType, string> = {
   Focus: 'Focus',
@@ -78,7 +83,7 @@ const fireBackground = (message: unknown) => {
   callBackground(message).catch((error) => console.warn('Background message failed', error));
 };
 
-const App: React.FC = () => {
+const App: React.FC<AppProps> = ({ mode = 'popup' }) => {
   const { theme, resolvedTheme, setTheme } = useTheme();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [sessionType, setSessionType] = useState<SessionType>('Focus');
@@ -107,11 +112,44 @@ const App: React.FC = () => {
   const [metrics, setMetrics] = useState<Metrics>(DEFAULT_METRICS);
   const [exportFeedback, setExportFeedback] = useState<string>('');
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [completionMessage, setCompletionMessage] = useState<string>('');
+  const [isManagingTasks, setIsManagingTasks] = useState<boolean>(false);
+  const [taskDrafts, setTaskDrafts] = useState<Task[]>([]);
+  const [taskError, setTaskError] = useState<string>('');
 
   const timerRef = useRef<number | null>(null);
   const lastSessionRef = useRef<number>(0);
 
   const statusLabel = useMemo(() => SESSION_LABEL[sessionType], [sessionType]);
+
+  const applyActiveSession = useCallback(
+    (active: ActiveSession | null | undefined) => {
+      if (!active) {
+        return;
+      }
+
+      const now = Date.now();
+      const elapsed = Math.max(0, Math.floor((now - active.startedAt) / 1000));
+      const remainingSeconds = Math.max(0, Math.round(active.durationSeconds - elapsed));
+
+      setCompletionMessage('');
+      setExportFeedback('');
+      setSessionType(active.sessionType);
+      if (active.sessionType === 'Focus') {
+        if (active.taskId) {
+          setSelectedTask(active.taskId);
+        }
+      }
+
+      setRemaining(remainingSeconds);
+      if (remainingSeconds > 0) {
+        setStatus('running');
+      } else {
+        setStatus('idle');
+      }
+    },
+    [],
+  );
 
   const startTimer = useCallback(
     (type: SessionType, options?: { durationSeconds?: number }) => {
@@ -121,6 +159,8 @@ const App: React.FC = () => {
         return;
       }
 
+      setCompletionMessage('');
+      setExportFeedback('');
       setSessionType(type);
       setRemaining(durationSeconds);
 
@@ -129,7 +169,7 @@ const App: React.FC = () => {
         payload: {
           sessionType: type,
           durationMinutes: durationSeconds / 60,
-          taskId: selectedTask || null,
+          taskId: type === 'Focus' ? selectedTask || null : null,
         },
       })
         .then(() => {
@@ -149,6 +189,14 @@ const App: React.FC = () => {
       const nextSession = getNextSession(session.sessionType);
       setStatus('idle');
       setSessionType(nextSession);
+      setRemaining(durationsRef.current[nextSession]);
+
+      const message =
+        session.sessionType === 'Focus'
+          ? 'Focus session complete! Enjoy your break.'
+          : 'Break finished. Ready for the next focus session?';
+      setCompletionMessage(message);
+      navigator.vibrate?.([200, 80, 200]);
 
       if (settingsRef.current.autoStartNext) {
         setTimeout(() => {
@@ -165,7 +213,7 @@ const App: React.FC = () => {
       return;
     }
 
-    storage.get(['settings', 'tasks', 'selectedTask', 'metrics'], (result) => {
+    storage.get(['settings', 'tasks', 'selectedTask', 'metrics', 'activeSession'], (result) => {
       const storedSettings = result.settings as Partial<Settings> | undefined;
       if (storedSettings) {
         setSettings({ ...DEFAULT_SETTINGS, ...storedSettings });
@@ -187,8 +235,20 @@ const App: React.FC = () => {
           totalPomodoros: storedMetrics.totalPomodoros ?? 0,
         });
       }
+
+      const active = result.activeSession as ActiveSession | null | undefined;
+      if (active) {
+        applyActiveSession(active);
+      }
     });
-  }, []);
+  }, [applyActiveSession]);
+
+  useEffect(() => {
+    if (isManagingTasks) {
+      setTaskDrafts(tasks.map((task) => ({ ...task })));
+      setTaskError('');
+    }
+  }, [isManagingTasks, tasks]);
 
   useEffect(() => {
     const storage = getStorage();
@@ -223,6 +283,15 @@ const App: React.FC = () => {
         setSelectedTask((changes.selectedTask.newValue as string) ?? '');
       }
 
+      if ('activeSession' in changes) {
+        const active = changes.activeSession.newValue as ActiveSession | null | undefined;
+        if (active) {
+          applyActiveSession(active);
+        } else {
+          setStatus((prev) => (prev === 'running' ? 'idle' : prev));
+        }
+      }
+
       if (changes.lastSession?.newValue) {
         const session = changes.lastSession.newValue as CompletedSession;
         if (session.completedAt && session.completedAt > lastSessionRef.current) {
@@ -234,7 +303,19 @@ const App: React.FC = () => {
 
     storage.onChanged.addListener(listener);
     return () => storage.onChanged.removeListener(listener);
-  }, [handleSessionCompleted]);
+  }, [applyActiveSession, handleSessionCompleted]);
+
+  useEffect(() => {
+    if (!completionMessage) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setCompletionMessage('');
+    }, mode === 'fullscreen' ? 8000 : 6000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [completionMessage, mode]);
 
   useEffect(() => {
     if (!exportFeedback) {
@@ -370,29 +451,86 @@ const App: React.FC = () => {
   };
 
   const handleOpenSettings = () => {
-    if (chrome?.runtime?.openOptionsPage) {
-      chrome.runtime.openOptionsPage();
+    const runtime = getRuntime();
+    if (runtime?.openOptionsPage) {
+      runtime.openOptionsPage();
       return;
     }
 
-    window.open('options.html', '_blank', 'noopener');
+    const url = runtime?.getURL?.('options.html') ?? 'options.html';
+    window.open(url, '_blank', 'noopener');
   };
 
-  const handleManageTasks = () => {
-    const title = window.prompt('Add a task (leave blank to cancel)');
-    if (!title) {
+  const handleOpenFullMode = () => {
+    const runtime = getRuntime();
+    const url = runtime?.getURL?.('focus.html') ?? 'focus.html';
+    if (chrome?.tabs?.create) {
+      chrome.tabs.create({ url });
       return;
     }
 
-    const newTask = createTask(title.trim());
-    const nextTasks = [...tasks, newTask];
-    setTasks(nextTasks);
-    setSelectedTask(newTask.id);
+    window.open(url, '_blank', 'noopener');
+  };
+
+  const persistTasks = (updated: Task[], nextSelectedTask: string) => {
+    setTasks(updated);
+    setSelectedTask(nextSelectedTask);
     const storage = getStorage()?.local;
-    storage?.set({ tasks: nextTasks, selectedTask: newTask.id });
+    storage?.set({ tasks: updated, selectedTask: nextSelectedTask });
+  };
+
+  const toggleTaskManager = () => {
+    if (isManagingTasks) {
+      setIsManagingTasks(false);
+      setTaskDrafts([]);
+      setTaskError('');
+    } else {
+      setTaskDrafts(tasks.map((task) => ({ ...task })));
+      setTaskError('');
+      setIsManagingTasks(true);
+    }
+  };
+
+  const handleDraftTitleChange = (id: string, title: string) => {
+    setTaskDrafts((current) => current.map((task) => (task.id === id ? { ...task, title } : task)));
+  };
+
+  const handleDeleteDraftTask = (id: string) => {
+    setTaskDrafts((current) => current.filter((task) => task.id !== id));
+  };
+
+  const handleAddDraftTask = () => {
+    const newTask = createTask('New task');
+    setTaskDrafts((current) => [...current, newTask]);
+  };
+
+  const handleCancelTaskManager = () => {
+    setIsManagingTasks(false);
+    setTaskDrafts([]);
+    setTaskError('');
+  };
+
+  const handleSaveTaskManager = () => {
+    const sanitized = taskDrafts
+      .map((task) => ({ ...task, title: task.title.trim() }))
+      .filter((task) => task.title.length > 0);
+
+    if (sanitized.length === 0) {
+      setTaskError('Please keep at least one task or cancel.');
+      return;
+    }
+
+    const nextSelected = sanitized.some((task) => task.id === selectedTask) ? selectedTask : sanitized[0].id;
+    persistTasks(sanitized, nextSelected);
+    setIsManagingTasks(false);
+    setTaskDrafts([]);
+    setTaskError('');
   };
 
   const handleTaskChange: React.ChangeEventHandler<HTMLSelectElement> = (event) => {
+    if (isManagingTasks) {
+      return;
+    }
     const value = event.target.value;
     setSelectedTask(value);
     const storage = getStorage()?.local;
@@ -430,6 +568,16 @@ const App: React.FC = () => {
     });
   };
 
+  const handleTestNotification = () => {
+    callBackground({ type: 'TEST_NOTIFICATION' })
+      .then(() => {
+        setExportFeedback('Test notification sent.');
+      })
+      .catch((error: Error) => {
+        setExportFeedback(`Test failed: ${error.message}`);
+      });
+  };
+
   const stats = useMemo(
     () => ({
       totalPomodoros: metrics.totalPomodoros,
@@ -445,7 +593,7 @@ const App: React.FC = () => {
   );
 
   return (
-    <div className="popup-root">
+    <div className={`popup-root ${mode === 'fullscreen' ? 'popup-root--fullscreen' : ''}`}>
       <header className={`timer-header timer-header--${sessionType.toLowerCase()}`}>
         <div>
           <h1 className="timer-title">Pomodoro Pilot</h1>
@@ -466,9 +614,19 @@ const App: React.FC = () => {
           <button type="button" className="ghost-button" onClick={handleOpenSettings}>
             Settings
           </button>
+          {mode === 'popup' && (
+            <button type="button" className="ghost-button" onClick={handleOpenFullMode}>
+              Full view
+            </button>
+          )}
         </div>
       </header>
       <main className="timer-main">
+        {completionMessage && (
+          <div className="completion-banner" role="status" aria-live="assertive">
+            {completionMessage}
+          </div>
+        )}
         <div className="timer-display" role="status" aria-live="polite">
           <span className="timer-time">{formatTime(remaining)}</span>
           <span className="timer-status">{status.toUpperCase()}</span>
@@ -493,24 +651,63 @@ const App: React.FC = () => {
         <section className="panel">
           <header className="panel-header">
             <h2>Current Task</h2>
-            <button type="button" className="ghost-button" onClick={handleManageTasks}>
-              Manage tasks
+            <button type="button" className="ghost-button" onClick={toggleTaskManager}>
+              {isManagingTasks ? 'Done' : 'Manage tasks'}
             </button>
           </header>
-          <select className="task-select" value={selectedTask} onChange={handleTaskChange}>
-            <option value="">No task selected</option>
-            {tasks.map((task) => (
-              <option key={task.id} value={task.id}>
-                {task.title}
-              </option>
-            ))}
-          </select>
-          {selectedTaskDetails && (
-            <p className="hint">
-              {selectedTaskDetails.totalPomos} pomodoros ·
-              {' '}
-              {Math.round(selectedTaskDetails.totalFocusSeconds / 60)} focus minutes
-            </p>
+          {isManagingTasks ? (
+            <div className="task-manager">
+              {taskDrafts.length === 0 && <p className="task-manager-hint">No tasks yet. Add one below.</p>}
+              {taskDrafts.map((task) => (
+                <div key={task.id} className="task-manager-row">
+                  <input
+                    className="task-manager-input"
+                    value={task.title}
+                    onChange={(event) => handleDraftTitleChange(task.id, event.target.value)}
+                    placeholder="Task name"
+                  />
+                  <button
+                    type="button"
+                    className="ghost-button task-manager-delete"
+                    onClick={() => handleDeleteDraftTask(task.id)}
+                    aria-label={`Delete ${task.title}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <div className="task-manager-controls">
+                <button type="button" className="ghost-button" onClick={handleAddDraftTask}>
+                  + Add task
+                </button>
+              </div>
+              {taskError && <p className="task-manager-error">{taskError}</p>}
+              <div className="task-manager-actions">
+                <button type="button" className="control" onClick={handleCancelTaskManager}>
+                  Cancel
+                </button>
+                <button type="button" className="control control-primary" onClick={handleSaveTaskManager}>
+                  Save tasks
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <select className="task-select" value={selectedTask} onChange={handleTaskChange}>
+                <option value="">No task selected</option>
+                {tasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.title}
+                  </option>
+                ))}
+              </select>
+              {selectedTaskDetails && (
+                <p className="hint">
+                  {selectedTaskDetails.totalPomos} pomodoros ·{' '}
+                  {Math.round(selectedTaskDetails.totalFocusSeconds / 60)} focus minutes
+                </p>
+              )}
+            </>
           )}
         </section>
         <section className="panel">
@@ -523,6 +720,9 @@ const App: React.FC = () => {
               disabled={isExporting}
             >
               {isExporting ? 'Exporting…' : 'Export Markdown'}
+            </button>
+            <button type="button" className="ghost-button" onClick={handleTestNotification}>
+              Test alert
             </button>
           </header>
           <ul className="stats-list">

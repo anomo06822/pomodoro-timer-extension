@@ -23,3 +23,12 @@ body {
   background: var(--color-background);
   color: var(--color-text);
 }
+
+body.fullscreen-root {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at top, rgba(239, 68, 68, 0.12), transparent 55%), var(--color-background);
+  padding: 0;
+}

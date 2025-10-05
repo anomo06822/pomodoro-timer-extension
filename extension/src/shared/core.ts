@@ -65,7 +65,7 @@ export interface CompletedSession {
 }
 
 export const createTask = (title: string): Task => ({
-  id: crypto.randomUUID(),
+  id: globalThis.crypto?.randomUUID?.() ?? `task-${Math.random().toString(36).slice(2, 9)}`,
   title,
   createdAt: new Date().toISOString(),
   totalPomos: 0,

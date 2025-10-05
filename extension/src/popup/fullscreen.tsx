@@ -4,6 +4,8 @@ import App from './App';
 import '../shared/theme.css';
 import { ThemeProvider } from '../shared/theme-context';
 
+document.body.classList.add('fullscreen-root');
+
 const root = document.getElementById('root');
 
 if (!root) {
@@ -13,7 +15,7 @@ if (!root) {
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <ThemeProvider>
-      <App mode="popup" />
+      <App mode="fullscreen" />
     </ThemeProvider>
   </React.StrictMode>,
 );
