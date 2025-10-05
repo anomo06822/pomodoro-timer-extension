@@ -3,13 +3,26 @@ import './OptionsApp.css';
 import { DEFAULT_SETTINGS, type Settings } from '../shared/core';
 import { useTheme } from '../shared/theme-context';
 
+const getStorage = () => (typeof chrome !== 'undefined' ? chrome.storage : undefined);
+
 const OptionsApp: React.FC = () => {
   const { theme, setTheme } = useTheme();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [statusMessage, setStatusMessage] = useState<string>('');
+  const [isSaving, setIsSaving] = useState<boolean>(false);
 
   useEffect(() => {
-    // TODO: hydrate from chrome.storage.sync/local
+    const storage = getStorage()?.local;
+    if (!storage) {
+      return;
+    }
+
+    storage.get(['settings'], (result) => {
+      const stored = result?.settings as Partial<Settings> | undefined;
+      if (stored) {
+        setSettings((prev) => ({ ...prev, ...stored }));
+      }
+    });
   }, []);
 
   const updateSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -17,14 +30,26 @@ const OptionsApp: React.FC = () => {
   };
 
   const handleSave = async () => {
-    try {
-      // Placeholder for future chrome.storage integration
+    setIsSaving(true);
+    const storage = getStorage()?.local;
+    if (!storage) {
+      setStatusMessage('Unable to save settings');
+      setIsSaving(false);
+      return;
+    }
+
+    storage.set({ settings }, () => {
+      setIsSaving(false);
+      if (chrome.runtime.lastError) {
+        console.error(chrome.runtime.lastError);
+        setStatusMessage('Unable to save settings');
+        return;
+      }
+
       setStatusMessage('Settings saved');
       setTheme(settings.theme);
-    } catch (error) {
-      console.error(error);
-      setStatusMessage('Unable to save settings');
-    }
+      window.setTimeout(() => setStatusMessage(''), 3000);
+    });
   };
 
   return (
@@ -102,8 +127,8 @@ const OptionsApp: React.FC = () => {
         <p className="hint">Current preference: {theme}</p>
       </section>
       <footer>
-        <button type="button" onClick={handleSave}>
-          Save changes
+        <button type="button" onClick={handleSave} disabled={isSaving}>
+          {isSaving ? 'Saving…' : 'Save changes'}
         </button>
         {statusMessage && <span className="status">{statusMessage}</span>}
       </footer>

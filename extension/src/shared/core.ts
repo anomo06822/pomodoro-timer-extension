@@ -9,6 +9,8 @@ export interface Task {
   notes?: string;
   totalPomos: number;
   todayPomos: number;
+  totalFocusSeconds: number;
+  todayFocusSeconds: number;
 }
 
 export interface Category {
@@ -46,4 +48,40 @@ export const DEFAULT_SETTINGS: Settings = {
   requireInteraction: true,
   soundEnabled: true,
   theme: 'system',
+};
+
+export interface ActiveSession {
+  sessionType: SessionType;
+  taskId?: string;
+  durationSeconds: number;
+  startedAt: number;
+}
+
+export interface CompletedSession {
+  sessionType: SessionType;
+  taskId?: string;
+  durationSeconds: number;
+  completedAt: number;
+}
+
+export const createTask = (title: string): Task => ({
+  id: crypto.randomUUID(),
+  title,
+  createdAt: new Date().toISOString(),
+  totalPomos: 0,
+  todayPomos: 0,
+  totalFocusSeconds: 0,
+  todayFocusSeconds: 0,
+});
+
+export interface Metrics {
+  focusSeconds: number;
+  breakSeconds: number;
+  totalPomodoros: number;
+}
+
+export const DEFAULT_METRICS: Metrics = {
+  focusSeconds: 0,
+  breakSeconds: 0,
+  totalPomodoros: 0,
 };

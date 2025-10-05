@@ -1,7 +1,16 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { useTheme } from '../shared/theme-context';
-import { DEFAULT_SETTINGS, type SessionType } from '../shared/core';
+import {
+  DEFAULT_METRICS,
+  DEFAULT_SETTINGS,
+  createTask,
+  type CompletedSession,
+  type Metrics,
+  type Settings,
+  type SessionType,
+  type Task,
+} from '../shared/core';
 
 type TimerStatus = 'idle' | 'running' | 'paused';
 
@@ -11,22 +20,14 @@ const SESSION_LABEL: Record<SessionType, string> = {
   LongBreak: 'Long Break',
 };
 
-const SESSION_DURATION_SECONDS: Record<SessionType, number> = {
-  Focus: DEFAULT_SETTINGS.focusMin * 60,
-  ShortBreak: DEFAULT_SETTINGS.shortBreakMin * 60,
-  LongBreak: DEFAULT_SETTINGS.longBreakMin * 60,
-};
-
-const sendBackgroundMessage = (message: unknown) => {
-  if (!chrome?.runtime?.sendMessage) {
-    return;
+const getNextSession = (session: SessionType): SessionType => {
+  if (session === 'Focus') {
+    return 'ShortBreak';
   }
-
-  chrome.runtime.sendMessage(message, () => {
-    if (chrome.runtime.lastError) {
-      console.warn('Background message failed', chrome.runtime.lastError.message);
-    }
-  });
+  if (session === 'ShortBreak') {
+    return 'Focus';
+  }
+  return 'Focus';
 };
 
 const formatTime = (totalSeconds: number) => {
@@ -39,15 +40,213 @@ const formatTime = (totalSeconds: number) => {
   return `${minutes}:${seconds}`;
 };
 
+const normalizeTask = (task: Task | (Partial<Task> & { id: string; title: string })): Task => ({
+  id: task.id,
+  title: task.title,
+  categoryId: task.categoryId,
+  createdAt: task.createdAt ?? new Date().toISOString(),
+  completed: task.completed ?? false,
+  notes: task.notes,
+  totalPomos: task.totalPomos ?? 0,
+  todayPomos: task.todayPomos ?? 0,
+  totalFocusSeconds: task.totalFocusSeconds ?? 0,
+  todayFocusSeconds: task.todayFocusSeconds ?? 0,
+});
+
+const getRuntime = () => (typeof chrome !== 'undefined' ? chrome.runtime : undefined);
+const getStorage = () => (typeof chrome !== 'undefined' ? chrome.storage : undefined);
+
+const callBackground = <T = unknown>(message: unknown): Promise<T> =>
+  new Promise((resolve, reject) => {
+    const runtime = getRuntime();
+    if (!runtime?.sendMessage) {
+      reject(new Error('Runtime unavailable'));
+      return;
+    }
+
+    runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      resolve(response as T);
+    });
+  });
+
+const fireBackground = (message: unknown) => {
+  callBackground(message).catch((error) => console.warn('Background message failed', error));
+};
+
 const App: React.FC = () => {
   const { theme, resolvedTheme, setTheme } = useTheme();
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [sessionType, setSessionType] = useState<SessionType>('Focus');
+  const durations = useMemo(
+    () => ({
+      Focus: settings.focusMin * 60,
+      ShortBreak: settings.shortBreakMin * 60,
+      LongBreak: settings.longBreakMin * 60,
+    }),
+    [settings],
+  );
+  const durationsRef = useRef(durations);
+  useEffect(() => {
+    durationsRef.current = durations;
+  }, [durations]);
+
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
   const [status, setStatus] = useState<TimerStatus>('idle');
-  const [remaining, setRemaining] = useState<number>(SESSION_DURATION_SECONDS.Focus);
+  const [remaining, setRemaining] = useState<number>(DEFAULT_SETTINGS.focusMin * 60);
   const [selectedTask, setSelectedTask] = useState<string>('');
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [metrics, setMetrics] = useState<Metrics>(DEFAULT_METRICS);
+  const [exportFeedback, setExportFeedback] = useState<string>('');
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+
   const timerRef = useRef<number | null>(null);
+  const lastSessionRef = useRef<number>(0);
 
   const statusLabel = useMemo(() => SESSION_LABEL[sessionType], [sessionType]);
+
+  const startTimer = useCallback(
+    (type: SessionType, options?: { durationSeconds?: number }) => {
+      const durationSeconds = options?.durationSeconds ?? durationsRef.current[type];
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        console.warn('Invalid session duration', durationSeconds);
+        return;
+      }
+
+      setSessionType(type);
+      setRemaining(durationSeconds);
+
+      callBackground({
+        type: 'START_TIMER',
+        payload: {
+          sessionType: type,
+          durationMinutes: durationSeconds / 60,
+          taskId: selectedTask || null,
+        },
+      })
+        .then(() => {
+          setStatus('running');
+        })
+        .catch((error: Error) => {
+          console.warn('Unable to start timer', error);
+          setStatus('idle');
+          setRemaining(durationSeconds);
+        });
+    },
+    [selectedTask],
+  );
+
+  const handleSessionCompleted = useCallback(
+    (session: CompletedSession) => {
+      const nextSession = getNextSession(session.sessionType);
+      setStatus('idle');
+      setSessionType(nextSession);
+
+      if (settingsRef.current.autoStartNext) {
+        setTimeout(() => {
+          startTimer(nextSession);
+        }, 250);
+      }
+    },
+    [startTimer],
+  );
+
+  useEffect(() => {
+    const storage = getStorage()?.local;
+    if (!storage) {
+      return;
+    }
+
+    storage.get(['settings', 'tasks', 'selectedTask', 'metrics'], (result) => {
+      const storedSettings = result.settings as Partial<Settings> | undefined;
+      if (storedSettings) {
+        setSettings({ ...DEFAULT_SETTINGS, ...storedSettings });
+      }
+
+      if (Array.isArray(result.tasks)) {
+        setTasks((result.tasks as Task[]).map((task) => normalizeTask(task)));
+      }
+
+      if (typeof result.selectedTask === 'string') {
+        setSelectedTask(result.selectedTask ?? '');
+      }
+
+      const storedMetrics = result.metrics as Partial<Metrics> | undefined;
+      if (storedMetrics) {
+        setMetrics({
+          focusSeconds: storedMetrics.focusSeconds ?? 0,
+          breakSeconds: storedMetrics.breakSeconds ?? 0,
+          totalPomodoros: storedMetrics.totalPomodoros ?? 0,
+        });
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    const storage = getStorage();
+    if (!storage?.onChanged) {
+      return;
+    }
+
+    const listener: Parameters<typeof chrome.storage.onChanged.addListener>[0] = (changes, areaName) => {
+      if (areaName !== 'local') {
+        return;
+      }
+
+      if (changes.settings) {
+        const next = { ...DEFAULT_SETTINGS, ...(changes.settings.newValue as Partial<Settings>) };
+        setSettings(next);
+      }
+
+      if (changes.tasks && Array.isArray(changes.tasks.newValue)) {
+        setTasks((changes.tasks.newValue as Task[]).map((task) => normalizeTask(task)));
+      }
+
+      if (changes.metrics?.newValue) {
+        const nextMetrics = changes.metrics.newValue as Partial<Metrics>;
+        setMetrics({
+          focusSeconds: nextMetrics.focusSeconds ?? 0,
+          breakSeconds: nextMetrics.breakSeconds ?? 0,
+          totalPomodoros: nextMetrics.totalPomodoros ?? 0,
+        });
+      }
+
+      if (changes.selectedTask) {
+        setSelectedTask((changes.selectedTask.newValue as string) ?? '');
+      }
+
+      if (changes.lastSession?.newValue) {
+        const session = changes.lastSession.newValue as CompletedSession;
+        if (session.completedAt && session.completedAt > lastSessionRef.current) {
+          lastSessionRef.current = session.completedAt;
+          handleSessionCompleted(session);
+        }
+      }
+    };
+
+    storage.onChanged.addListener(listener);
+    return () => storage.onChanged.removeListener(listener);
+  }, [handleSessionCompleted]);
+
+  useEffect(() => {
+    if (!exportFeedback) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setExportFeedback('');
+    }, 4000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [exportFeedback]);
 
   useEffect(() => {
     if (status !== 'running') {
@@ -82,27 +281,36 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (status === 'idle') {
-      setRemaining(SESSION_DURATION_SECONDS[sessionType]);
+      setRemaining(durations[sessionType]);
     }
-  }, [sessionType, status]);
+  }, [durations, sessionType, status]);
+
+  useEffect(() => {
+    const storage = getStorage()?.local;
+    if (!storage) {
+      return;
+    }
+    storage.set({ selectedTask });
+  }, [selectedTask]);
+
+  useEffect(() => {
+    if (selectedTask && !tasks.find((task) => task.id === selectedTask)) {
+      setSelectedTask('');
+    }
+  }, [selectedTask, tasks]);
 
   const handleStart = () => {
     if (status === 'running') {
       return;
     }
 
-    if (remaining <= 0) {
-      setRemaining(SESSION_DURATION_SECONDS[sessionType]);
+    if (sessionType === 'Focus' && !selectedTask) {
+      setExportFeedback('Select a task before starting a focus session.');
+      return;
     }
 
-    sendBackgroundMessage({
-      type: 'START_TIMER',
-      payload: {
-        sessionType,
-        durationMinutes: SESSION_DURATION_SECONDS[sessionType] / 60,
-      },
-    });
-    setStatus('running');
+    const durationSeconds = status === 'paused' ? remaining : durations[sessionType];
+    startTimer(sessionType, { durationSeconds });
   };
 
   const handlePause = () => {
@@ -110,27 +318,131 @@ const App: React.FC = () => {
       return;
     }
 
-    sendBackgroundMessage({ type: 'STOP_TIMER' });
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     setStatus('paused');
+    fireBackground({ type: 'STOP_TIMER' });
   };
 
   const handleReset = () => {
-    sendBackgroundMessage({ type: 'STOP_TIMER' });
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
     setStatus('idle');
-    setRemaining(SESSION_DURATION_SECONDS[sessionType]);
+    setRemaining(durations[sessionType]);
+    fireBackground({ type: 'STOP_TIMER' });
   };
 
   const handleSkip = () => {
-    const nextSession: SessionType = sessionType === 'Focus' ? 'ShortBreak' : 'Focus';
-    sendBackgroundMessage({ type: 'STOP_TIMER' });
-    setSessionType(nextSession);
-    setRemaining(SESSION_DURATION_SECONDS[nextSession]);
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    fireBackground({ type: 'STOP_TIMER' });
+    const nextSession = getNextSession(sessionType);
     setStatus('idle');
+    setSessionType(nextSession);
+  };
+
+  const handleCompleteEarly = () => {
+    if (status !== 'running') {
+      return;
+    }
+
+    const planned = durationsRef.current[sessionType];
+    const elapsed = Math.max(1, planned - remaining);
+    callBackground({ type: 'COMPLETE_SESSION', payload: { elapsedSeconds: elapsed } }).catch((error: Error) => {
+      setExportFeedback(`Complete failed: ${error.message}`);
+    });
+
+    setStatus('idle');
+    setRemaining(0);
   };
 
   const handleThemeChange = (value: 'system' | 'light' | 'dark') => {
     setTheme(value);
   };
+
+  const handleOpenSettings = () => {
+    if (chrome?.runtime?.openOptionsPage) {
+      chrome.runtime.openOptionsPage();
+      return;
+    }
+
+    window.open('options.html', '_blank', 'noopener');
+  };
+
+  const handleManageTasks = () => {
+    const title = window.prompt('Add a task (leave blank to cancel)');
+    if (!title) {
+      return;
+    }
+
+    const newTask = createTask(title.trim());
+    const nextTasks = [...tasks, newTask];
+    setTasks(nextTasks);
+    setSelectedTask(newTask.id);
+    const storage = getStorage()?.local;
+    storage?.set({ tasks: nextTasks, selectedTask: newTask.id });
+  };
+
+  const handleTaskChange: React.ChangeEventHandler<HTMLSelectElement> = (event) => {
+    const value = event.target.value;
+    setSelectedTask(value);
+    const storage = getStorage()?.local;
+    storage?.set({ selectedTask: value });
+  };
+
+  const handleExportMarkdown = () => {
+    if (isExporting) {
+      return;
+    }
+
+    const runtime = getRuntime();
+    if (!runtime?.sendMessage) {
+      setExportFeedback('Unable to reach background script.');
+      return;
+    }
+
+    setIsExporting(true);
+    setExportFeedback('Generating Markdown report...');
+
+    runtime.sendMessage({ type: 'EXPORT_MARKDOWN' }, (response) => {
+      setIsExporting(false);
+
+      if (chrome.runtime.lastError) {
+        setExportFeedback(`Export failed: ${chrome.runtime.lastError.message}`);
+        return;
+      }
+
+      if (response?.ok) {
+        setExportFeedback('Markdown report ready in your downloads.');
+        return;
+      }
+
+      setExportFeedback(`Export failed: ${response?.error ?? 'Unknown error'}`);
+    });
+  };
+
+  const stats = useMemo(
+    () => ({
+      totalPomodoros: metrics.totalPomodoros,
+      focusMinutes: Math.round(metrics.focusSeconds / 60),
+      breakMinutes: Math.round(metrics.breakSeconds / 60),
+    }),
+    [metrics],
+  );
+
+  const selectedTaskDetails = useMemo(
+    () => tasks.find((task) => task.id === selectedTask),
+    [selectedTask, tasks],
+  );
 
   return (
     <div className="popup-root">
@@ -151,6 +463,9 @@ const App: React.FC = () => {
             <option value="light">Light</option>
             <option value="dark">Dark</option>
           </select>
+          <button type="button" className="ghost-button" onClick={handleOpenSettings}>
+            Settings
+          </button>
         </div>
       </header>
       <main className="timer-main">
@@ -165,52 +480,66 @@ const App: React.FC = () => {
           <button type="button" onClick={handlePause} className="control">
             Pause
           </button>
+          <button type="button" onClick={handleCompleteEarly} className="control">
+            Finish session
+          </button>
           <button type="button" onClick={handleReset} className="control">
             Reset
           </button>
           <button type="button" onClick={handleSkip} className="control">
-            Skip Break
+            Next session
           </button>
         </div>
         <section className="panel">
           <header className="panel-header">
             <h2>Current Task</h2>
-            <button type="button" className="ghost-button">
+            <button type="button" className="ghost-button" onClick={handleManageTasks}>
               Manage tasks
             </button>
           </header>
-          <select
-            className="task-select"
-            value={selectedTask}
-            onChange={(event) => setSelectedTask(event.target.value)}
-          >
+          <select className="task-select" value={selectedTask} onChange={handleTaskChange}>
             <option value="">No task selected</option>
-            <option value="spec">Write product spec</option>
-            <option value="review">Code review</option>
-            <option value="study">Study algorithms</option>
+            {tasks.map((task) => (
+              <option key={task.id} value={task.id}>
+                {task.title}
+              </option>
+            ))}
           </select>
+          {selectedTaskDetails && (
+            <p className="hint">
+              {selectedTaskDetails.totalPomos} pomodoros ·
+              {' '}
+              {Math.round(selectedTaskDetails.totalFocusSeconds / 60)} focus minutes
+            </p>
+          )}
         </section>
         <section className="panel">
           <header className="panel-header">
             <h2>Today&apos;s Progress</h2>
-            <button type="button" className="ghost-button">
-              Export Markdown
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={handleExportMarkdown}
+              disabled={isExporting}
+            >
+              {isExporting ? 'Exporting…' : 'Export Markdown'}
             </button>
           </header>
           <ul className="stats-list">
             <li>
               <span>Total Pomodoros</span>
-              <strong>0</strong>
+              <strong>{stats.totalPomodoros}</strong>
             </li>
             <li>
               <span>Focus Minutes</span>
-              <strong>0</strong>
+              <strong>{stats.focusMinutes}</strong>
             </li>
             <li>
               <span>Break Minutes</span>
-              <strong>0</strong>
+              <strong>{stats.breakMinutes}</strong>
             </li>
           </ul>
+          {exportFeedback && <p className="hint" aria-live="polite">{exportFeedback}</p>}
         </section>
       </main>
     </div>

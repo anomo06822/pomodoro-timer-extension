@@ -1,5 +1,8 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
+const THEME_KEY = 'themePreference';
+const getStorage = () => (typeof chrome !== 'undefined' ? chrome.storage : undefined);
+
 export type ThemePreference = 'system' | 'light' | 'dark';
 
 interface ThemeContextValue {
@@ -21,6 +24,20 @@ export const ThemeProvider: React.FC<React.PropsWithChildren<{ initialTheme?: Th
   const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>(getSystemTheme());
 
   useEffect(() => {
+    const storage = getStorage()?.local;
+    if (!storage) {
+      return;
+    }
+
+    storage.get(THEME_KEY, (result) => {
+      const storedTheme = result[THEME_KEY] as ThemePreference | undefined;
+      if (storedTheme) {
+        setTheme(storedTheme);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = (event: MediaQueryListEvent) => setSystemTheme(event.matches ? 'dark' : 'light');
     media.addEventListener('change', handler);
@@ -32,6 +49,11 @@ export const ThemeProvider: React.FC<React.PropsWithChildren<{ initialTheme?: Th
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme;
   }, [resolvedTheme]);
+
+  useEffect(() => {
+    const storage = getStorage()?.local;
+    storage?.set({ [THEME_KEY]: theme });
+  }, [theme]);
 
   const value = useMemo(
     () => ({
