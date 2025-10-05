@@ -5,7 +5,10 @@
     "moduleResolution": "Bundler",
     "allowSyntheticDefaultImports": true,
     "types": ["node", "chrome"],
-    "tsBuildInfoFile": "tsconfig.node.tsbuildinfo"
+    "tsBuildInfoFile": "tsconfig.node.tsbuildinfo",
+    "outDir": "dist-types/node",
+    "declaration": true,
+    "emitDeclarationOnly": true
   },
   "include": ["vite.config.ts"]
 }

@@ -66,7 +66,7 @@ export default defineConfig(({ mode }) => {
     ...(isDev && {
       host_permissions: ['http://localhost:5173/*'],
       content_security_policy: {
-        extension_pages: "script-src 'self' http://localhost:5173 'unsafe-eval'; object-src 'self';",
+        extension_pages: "script-src 'self' http://localhost:5173; object-src 'self';",
       },
     }),
   });

@@ -1,7 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { useTheme } from '../shared/theme-context';
-import type { SessionType } from '../shared/core';
+import { DEFAULT_SETTINGS, type SessionType } from '../shared/core';
 
 type TimerStatus = 'idle' | 'running' | 'paused';
 
@@ -9,6 +9,24 @@ const SESSION_LABEL: Record<SessionType, string> = {
   Focus: 'Focus',
   ShortBreak: 'Short Break',
   LongBreak: 'Long Break',
+};
+
+const SESSION_DURATION_SECONDS: Record<SessionType, number> = {
+  Focus: DEFAULT_SETTINGS.focusMin * 60,
+  ShortBreak: DEFAULT_SETTINGS.shortBreakMin * 60,
+  LongBreak: DEFAULT_SETTINGS.longBreakMin * 60,
+};
+
+const sendBackgroundMessage = (message: unknown) => {
+  if (!chrome?.runtime?.sendMessage) {
+    return;
+  }
+
+  chrome.runtime.sendMessage(message, () => {
+    if (chrome.runtime.lastError) {
+      console.warn('Background message failed', chrome.runtime.lastError.message);
+    }
+  });
 };
 
 const formatTime = (totalSeconds: number) => {
@@ -25,29 +43,88 @@ const App: React.FC = () => {
   const { theme, resolvedTheme, setTheme } = useTheme();
   const [sessionType, setSessionType] = useState<SessionType>('Focus');
   const [status, setStatus] = useState<TimerStatus>('idle');
-  const [remaining, setRemaining] = useState<number>(25 * 60);
+  const [remaining, setRemaining] = useState<number>(SESSION_DURATION_SECONDS.Focus);
   const [selectedTask, setSelectedTask] = useState<string>('');
+  const timerRef = useRef<number | null>(null);
 
   const statusLabel = useMemo(() => SESSION_LABEL[sessionType], [sessionType]);
 
+  useEffect(() => {
+    if (status !== 'running') {
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
+
+    timerRef.current = window.setInterval(() => {
+      setRemaining((prev) => {
+        if (prev <= 1) {
+          if (timerRef.current !== null) {
+            window.clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          setStatus('idle');
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [status]);
+
+  useEffect(() => {
+    if (status === 'idle') {
+      setRemaining(SESSION_DURATION_SECONDS[sessionType]);
+    }
+  }, [sessionType, status]);
+
   const handleStart = () => {
+    if (status === 'running') {
+      return;
+    }
+
+    if (remaining <= 0) {
+      setRemaining(SESSION_DURATION_SECONDS[sessionType]);
+    }
+
+    sendBackgroundMessage({
+      type: 'START_TIMER',
+      payload: {
+        sessionType,
+        durationMinutes: SESSION_DURATION_SECONDS[sessionType] / 60,
+      },
+    });
     setStatus('running');
-    // TODO: connect with background timer service
   };
 
   const handlePause = () => {
+    if (status !== 'running') {
+      return;
+    }
+
+    sendBackgroundMessage({ type: 'STOP_TIMER' });
     setStatus('paused');
   };
 
   const handleReset = () => {
+    sendBackgroundMessage({ type: 'STOP_TIMER' });
     setStatus('idle');
-    setRemaining(sessionType === 'Focus' ? 25 * 60 : sessionType === 'ShortBreak' ? 5 * 60 : 15 * 60);
+    setRemaining(SESSION_DURATION_SECONDS[sessionType]);
   };
 
   const handleSkip = () => {
     const nextSession: SessionType = sessionType === 'Focus' ? 'ShortBreak' : 'Focus';
+    sendBackgroundMessage({ type: 'STOP_TIMER' });
     setSessionType(nextSession);
-    setRemaining(nextSession === 'Focus' ? 25 * 60 : nextSession === 'ShortBreak' ? 5 * 60 : 15 * 60);
+    setRemaining(SESSION_DURATION_SECONDS[nextSession]);
     setStatus('idle');
   };
 
