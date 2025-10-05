@@ -1,0 +1,94 @@
+var __assign = (this && this.__assign) || function () {
+    __assign = Object.assign || function(t) {
+        for (var s, i = 1, n = arguments.length; i < n; i++) {
+            s = arguments[i];
+            for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p))
+                t[p] = s[p];
+        }
+        return t;
+    };
+    return __assign.apply(this, arguments);
+};
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { crx, defineManifest } from '@crxjs/vite-plugin';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+var __dirname = dirname(fileURLToPath(import.meta.url));
+export default defineConfig(function (_a) {
+    var _b;
+    var mode = _a.mode;
+    var isDev = mode === 'development';
+    var manifest = defineManifest(__assign({ manifest_version: 3, name: 'Pomodoro Pilot', version: '0.1.0', description: 'Lightweight Pomodoro timer with task categories, notifications, daily stats, and Markdown export.', action: {
+            default_popup: 'popup.html',
+            default_title: 'Pomodoro Pilot',
+        }, options_ui: {
+            page: 'options.html',
+            open_in_tab: true,
+        }, background: {
+            service_worker: 'src/background/service-worker.ts',
+            type: 'module',
+        }, permissions: ['alarms', 'notifications', 'storage', 'downloads', 'commands'], optional_permissions: ['windows'], icons: {
+            '16': 'icons/icon-16.png',
+            '48': 'icons/icon-48.png',
+            '128': 'icons/icon-128.png',
+        }, commands: {
+            'toggle-timer': {
+                suggested_key: {
+                    default: 'Ctrl+Shift+S',
+                    mac: 'Command+Shift+S',
+                },
+                description: 'Start or pause the current Pomodoro session',
+            },
+            'reset-timer': {
+                suggested_key: {
+                    default: 'Ctrl+Shift+R',
+                    mac: 'Command+Shift+R',
+                },
+                description: 'Reset the Pomodoro timer',
+            },
+            'export-markdown': {
+                suggested_key: {
+                    default: 'Ctrl+Shift+E',
+                    mac: 'Command+Shift+E',
+                },
+                description: "Export today's Pomodoro report as Markdown",
+            },
+        }, web_accessible_resources: [
+            {
+                resources: ['src/offscreen/offscreen.html', 'sounds/notify.wav'],
+                matches: ['<all_urls>'],
+            },
+        ] }, (isDev && {
+        host_permissions: ['http://localhost:5173/*'],
+        content_security_policy: {
+            extension_pages: "script-src 'self' http://localhost:5173 'unsafe-eval'; object-src 'self';",
+        },
+    })));
+    var config = {
+        plugins: [react(), crx({ manifest: manifest })],
+        server: {
+            cors: true,
+            headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+                'Access-Control-Allow-Headers': '*',
+            },
+        },
+        build: {
+            outDir: 'dist',
+            rollupOptions: {
+                input: {
+                    'popup.html': resolve(__dirname, 'popup.html'),
+                    'options.html': resolve(__dirname, 'options.html'),
+                    'offscreen.html': resolve(__dirname, 'src/offscreen/offscreen.html'),
+                },
+            },
+        },
+    };
+    if (process.env.DEBUG_VITE_CONFIG === 'true') {
+        console.log('[vite-config] mode', mode, 'isDev', isDev);
+        console.log('[vite-config] rollup inputs', (_b = config.build.rollupOptions) === null || _b === void 0 ? void 0 : _b.input);
+    }
+    return config;
+});
